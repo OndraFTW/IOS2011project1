@@ -1,0 +1,532 @@
+#!/bin/ksh
+
+#
+# Soubor:  ardiff
+# Datum:   2011/03/11
+# Autor:   Ondrej Slampa
+# Kontakt: xslamp01@stud.fit.vutbr.cz
+# Projekt: Skript ardiff, projekt c. 1 pro predmet IOS
+# Popis:   Skript zaznamenava zmeny souboru dvou ruznych archivu,
+#          tyto zmeny uklada do adresarove struktury odpovidajici danym archivum
+#          a aplikuje zmeny na jednom z techto archivu pro ziskani archivu druheho. 
+#
+
+# 
+# Provede ukonceni skriptu.
+# $1 typ chyby
+#
+
+function end
+{
+	#pokud byla vytvorena docasna slozka, smaze se
+	if [ -d "$ardifftmp" ];
+	then rm -r "$ardifftmp"
+	fi
+
+	#ukonceni skriptu a vypis chyboveho hlaseni podle podle typu chyby
+	#"chyba" OK znamena, ze vse probehlo jak melo
+	if [ "$1" = "patch" ];
+	then
+		echo "Nastala chyba pri aplikaci rozdiloveho archivu." >&2
+		exit 1
+	elif [ "$1" = "dir" ];
+	then
+		echo "Nastala chyba pri praci s adresarem (neexistuje, nelze otevrit, vytvorit ci smazat)." >&2
+		exit 1
+	elif [ "$1" = "file" ];
+	then
+		echo "Nastala chyba pri praci se souborem (neexistuje, nelze otevrit, vytvorit ci smazat)." >&2
+		exit 1
+	elif [ "$1" = "comp" ];
+	then
+		echo "Nastala chyba pri kompresi." >&2
+		exit 1
+	elif [ "$1" = "decomp" ];
+	then
+		echo "Nastala chyba pri dekompresi." >&2
+		exit 1
+	elif [ "$1" = "param" ]
+	then
+echo "ardiff vypisuje zmeny archivu, vytvari rozdilovy archiv nebo aplikuje rozdilovy
+archiv na zdrojovy archiv.
+Pouziti: ardiff [volby] archiv1 archiv2
+Volby:
+  -o SOUBOR  Pokud je cilem skriptu vytvorit archiv, bude vytvoren do souboru
+             se jmenem SOUBOR (plati pro -c a -p).
+  -l         Vypis seznamu souboru, ktere se v zadanych archivech lisi.
+  -c         Vytvoreni rozdiloveho archivu.
+  -p         Aplikace rozdiloveho archivu (argument archiv2) na zdrojovy archiv
+             (argument archiv1).
+  -r         Prepnuti do reverzniho rezimu (plati pro -p)."
+		exit 0
+	elif [ "$1" = "OK" ]
+	then
+		exit 0
+	else
+		echo "Nastala neznama chyba." >&2
+		exit 1
+	fi
+}
+
+#
+# Definice promennych
+#
+
+#adresar ze, ktereho byl skript zavolan
+calldir=`pwd`
+
+#adresar na docasne soubory
+temp=/tmp
+#temp=/homes/eva/xs/xslamp01
+
+cd "$temp" || end "dir"
+ardifftmp=`mktemp -d ardiff.XXXXXXXXX` || end "dir"
+ardifftmp="$temp/$ardifftmp"
+
+#slozky na ulozeni rozbalenych archivu
+ar1="$ardifftmp/ar1"
+ar2="$ardifftmp/ar2"
+ar3="$ardifftmp/ar3"
+
+#slozky na ulozeni rozbalenych archivu, se zmenenou cestou pro pouziti sedem
+sed_ardifftmp=`echo "$ardifftmp" | sed -e 's/\//\\\\\//g'`
+sed_ar1=`echo "$ar1" | sed -e 's/\//\\\\\//g'`
+sed_ar2=`echo "$ar2" | sed -e 's/\//\\\\\//g'`
+sed_ar3=`echo "$ar3" | sed -e 's/\//\\\\\//g'`
+
+#parametry prikazove radky
+opto=false
+optl=false
+optc=false
+optp=false
+optr=false
+
+#
+# Definice funkcí
+#
+
+# 
+# Provede kompresi vsech soboru a slozek v adresari.
+# $1 adresar na kompresi
+# $2 jmeno vysledneho archivu
+#
+
+function compress
+{
+	#pripona vysledneho archivu
+	ext=`echo "$2" | rev | cut -d. -f1 | rev`
+	
+	#jmeno vysledneho archivu
+	name=`echo "$2" | rev | cut -d/ -f1 | rev`
+	
+	#premisteni do adresare na kompresi
+	cd "$1" >/dev/null 2>&1 || end "dir"
+	
+	#komprese podle pripony vysledneho archivu
+	if [ "$ext" = "tar" ];
+	then tar -cf "$name" * >/dev/null 2>&1 || end "comp"
+	elif [ "$ext" = "gz" -o "$ext" = "tgz" ];
+	then tar -czf "$name" * >/dev/null 2>&1 || end "comp"
+	elif [ "$ext" = "bz2" ];
+	then  tar -cjf "$name" * >/dev/null 2>&1 || end "comp"
+	elif [ "$ext" = "zip" ];
+	then zip -qr "$name" * >/dev/null 2>&1 || end "comp"
+	else end "comp"
+	fi
+	
+	#presun archivu
+	if [ "${1:0:1}" = "/" ];
+	then cp "$name" "$2"
+	elif [ "${1:0:2}" = "./" ];
+	then cp "$name" "$calldir/${2:2}" 2>/dev/null
+	else cp "$name" "$calldir/$name" 2>/dev/null
+	fi
+}
+
+# 
+# Provede dekompresi archivu.
+# $1 archiv na dekompresi
+# $2 adresar na ulozeni obsahu archivu
+#
+
+function decompress
+{	
+	#umisteni archivu
+	if [ "${1:0:1}" = "/" ];
+	then archive="$1"
+	elif [ "${1:0:2}" = "./" ];
+	then archive="$calldir/${1:2}"
+	else archive="$calldir/$1"
+	fi
+	
+	#zjisteni typu souboru
+	spec=`file -i -b "$archive"`
+	
+	#dekomprese podle typu souboru
+	if [ "$spec" = "application/x-tar; charset=binary" ];
+	then tar -C "$2" -xf "$archive" >/dev/null 2>&1 || end "decomp"
+	elif [ "$spec" = "application/x-gzip; charset=binary" ];
+	then tar -C "$2" -zxf "$archive" >/dev/null 2>&1 || end "decomp"
+	elif [ "$spec" = "application/x-bzip2; charset=binary" ];
+	then tar -C "$2" -jxf "$archive" >/dev/null 2>&1 || end "decomp"
+	elif [ "$spec" = "application/zip; charset=binary" ];
+	then unzip -qo "$archive" -d "$2" >/dev/null 2>&1 || end "decomp"
+	else end "decomp"
+	fi
+}
+
+#
+# Provede porovnani dvou souboru a pokud jsou odlisne provede akci podle
+# parametru prikazove radky
+# $1 prvni soubor
+# $2 druhy soubor
+# $3 rozdilovy soubor soubor bez pripony
+#
+
+function filecmp
+{
+	
+	#pokud se ma vypsat seznam rozdilnych souboru
+	if `$optl`;
+	then
+		#pokud jsou soubory odlisne
+		if ! diff -auN "$1" "$2" >/dev/null 2>&1;
+		then
+			#vypise se to na stdout
+			echo `echo "$1" | sed -e "s/$sed_ar1\///" -e "s/$sed_ar3\///"`
+		fi
+	fi
+	
+	#pokud se ma vytvorit rozdilovy soubor
+	if `$optc`;
+	then
+	
+		#ulozeni obsahu rozdiloveho souboru do promenne
+		patchfile=`diff -auN "$1" "$2"`
+ 
+		#pokud neni rozdil nulovy
+		if [ "$patchfile" != "" ];
+		then
+			#uprava obsahu rozdiloveho souboru
+			patchfile=`echo "$patchfile" | sed -e "1s/$sed_ar1\//a\//" -e "2s/$sed_ar2\//b\//"`
+			
+			if [ "$1" = "$3" ];
+			then echo "$patchfile" | sed -e "1s/$sed_ar3\//a\//" >"$3.patch"
+			elif [ "$2" = "$3" ];
+			then echo "$patchfile" | sed -e "2s/$sed_ar3\//b\//" >"$3.patch"
+			else echo "$patchfile" >"$3.patch"
+			fi
+
+		fi
+	fi
+}
+
+#
+# Provede inspekci dvou slozek tzn. soubory ve složkách porovna pomoci funkce
+# filecmp a pro slozky se rekurzivne zavola.
+# $1 prvni slozka
+# $2 druha slozka
+# $3 rozdilova slozka
+#
+
+function inspect
+{
+	#pokud existuje slozka $1 ulozi se jeji polozky do seznamu polozek adresaru
+	#mezery ve jmenech se nahradí /
+	if [ -d "$1" ];
+	then
+		cd "$1" >/dev/null 2>&1 || end "dir"
+		list=`ls -1 | tr ' ' '/'`
+	fi
+	
+	#pokud existuje adresar $2 pridaji se jeho polozky, ktere nejsou soucasti $1,
+	#k seznamu polozek adresaru
+	#mezery ve jmenech se nahradí /
+	if [ -d "$2" ];
+	then
+		#zjisteni polozek $2
+		cd "$2" >/dev/null 2>&1 || end "dir"
+		list2=`ls -1 | tr ' ' '/'`
+		
+		#iterace polozkami $2
+		for item2 in $list2;
+		do
+			item2=`echo "$item2" | tr '/' ' '`
+			#pokud neni polozka v $1 prida se do seznamu polozek
+			if [ ! -e "$1/$item2" ];
+			then
+				item=`echo "$item" | tr ' ' '/'`
+				list+=" $item2"
+			fi
+		done
+	fi
+	
+	#pokud se ma vytvorit rozdilovy archiv vytvori se adresar $3
+	if `$optc`;
+	then mkdir "$3" >/dev/null 2>&1 || end "dir"
+	fi
+	
+	#iterace polozkami $1 a $2
+	for item in $list;
+	do
+		#nahrazeni / ve jmenech mezerami
+		item=`echo "$item" | tr '/' ' '`
+		
+		#pokud je polozka v $1 soubor a v $2 adresar, provede se porovnani
+		#souboru v $1 s neexistujicim souborem v $3 a fce inspect se zavola
+		#pro adresar v $2 a neexistujici adresar v $3
+		if [ -f "$1/$item" -a -d "$2/$item" ];
+		then
+			filecmp "$1/$item" "$3/$item" "$3/$item"
+			inspect "$3/$item" "$2/$item" "$3/$item"
+		#pokud je polozka v $2 soubor a v $1 adresar, provede se porovnani
+		#souboru v $2 s neexistujicim souborem v $3 a fce inspect se zavola
+		#pro adresar v $1 a neexistujici slozku v $3
+		elif [ -d "$1/$item" -a -f "$2/$item" ];
+		then
+			filecmp "$3/$item" "$2/$item" "$3/$item"
+			inspect "$1/$item" "$3/$item" "$3/$item"
+		#pokud je polozka alspon v jednom z $1 a $2 soubor porovna/porovnaji se
+		elif [ -f "$1/$item" -o -f "$2/$item" ];
+		then
+			filecmp "$1/$item" "$2/$item" "$3/$item"
+		#pokud je polozka alspon v jednom z $1 a $2 adresar zavola se pro
+		#nej/je fce inspect
+		elif [ -d "$1/$item" -o -d "$2/$item" ];
+		then
+			inspect "$1/$item" "$2/$item" "$3/$item"
+		fi
+	done
+	
+	#pokud se ma vytvorit rozdilovy archiv
+	if `$optc`;
+	then
+		#seznam polozek zdrojoveho adresare
+		con=`ls "$3"`
+	
+		#pokud je zdrojovy adresar smaze se
+		if [ -z "$con" ];
+		then
+			rm -r "$3" >/dev/null 2>&1 || end "dir"
+		fi
+	fi
+}
+
+#
+# Provede aplikaci rozdilove slozky na zdrojovou slozku. Soubory v rozdilove
+# slozce aplikuje na soubory ve zdrojove slozce na slozky v rozdilove slozce
+# se rekurzivne zavola.
+# $1 zdrojova slozka
+# $2 rozdilova slozka
+#
+
+function dirpatch
+{
+	#pole na ulozeni polozek rozdilovem adresari
+	typeset -a array
+	
+	#zjisteni seznamu polozek v rozdilovem adresari
+	#nahrazeni / ve jmenech mezerami
+	cd "$2" >/dev/null 2>&1 || end "dir"
+	list=`ls -1 | tr ' ' '/'`
+	
+	#ulozeni seznamu polozek do pole
+	i=0
+	for word in `echo ${list}`;
+	do
+		array[$i]=$word
+		i=$((i+1))
+	done
+	
+	#pokud $1 neexistuje vytvori se
+	if [ ! -e "$1" ];
+	then
+		mkdir "$1" >/dev/null 2>&1 || end "dir"
+	fi
+	
+	#iteračni promenna
+	typeset -i iter=0
+	#pocet polozek v rozdilovem adresari
+	typeset -i imax=${#array[@]}
+	
+	#iterace polozkami $2
+	while [ ! $iter -eq $imax ];
+	do
+		#načteni prave zpracovavane polozky do promenne item
+		#nahrazeni / ve jmenech polozek mezerami
+		#inkrementace iteracni promenne
+		item=${array[$iter]}
+		item=`echo $item | tr '/' ' '`
+		iter=$((iter+1))
+		
+		#odstraneni pripony ze jmena polozky
+		oldfile=`echo "$item" | rev | cut -d. -f2- | rev`
+		
+		#pokud je polozka v rozdilovem adresari rozdilovy soubor a ve zdrojovem
+		#adresari adresar nebo naopak, zaradi se zpracovani teto polozky na konec
+		if [[ ( -d "$1/$item" && -f "$2/$oldfile" ) || ( -f "$1/$item" && -d "$2/$item" ) ]];
+		then
+			array[$imax]=$item
+			imax=$((imax+1))
+			continue
+		fi
+		
+		#pokud je polozka v rozdilovem adresari adresar, zavola se pro nej fce patchdir
+		if [ -d "$2/$item" ];
+		then
+			dirpatch "$1/$item" "$2/$item"
+		#pokud je polozka soubor
+		else
+			
+			#uprava rozdiloveho souboru
+			patchfile=`cat "$2/$item" | sed -e "1s/ a\//$sed_ar1\//" -e "2s/ b\//$sed_ar2\//"`
+			
+			#ulozeni upraveneho rozdiloveho souboru
+			echo "$patchfile" >"$2/$item"
+			
+			#pokud zdrojovy soubor neexistuje, vytvori se jako prazdny soubor
+			if [ ! -e "$1/$oldfile" ];
+			then
+				touch "$1/$oldfile" >/dev/null 2>&1 || end "file"
+			fi
+			
+			#pokud se ma rozdilovy archiv aplikovat reverzne, stane se tak
+			if `$optr`;
+			then
+				patch -usR "$1/$oldfile" "$2/$item" >/dev/null 2>&1 || end "patch"
+			#jinak se aplikuje normalne
+			else
+				patch -us "$1/$oldfile" "$2/$item" >/dev/null 2>&1 || end "patch"
+			fi
+			
+			#pokud je zdrojovy soubor prazdny, smaze se
+			if [ ! -s "$1/$oldfile" ];
+			then rm "$1/$oldfile" >/dev/null 2>&1 || end "file"
+			fi
+		fi
+	done
+	
+	#seznam polozek zdrojoveho adresare
+	con=`ls "$1"`
+	
+	#pokud je zdrojovy adresar smaze se
+	if [ -z "$con" ];
+	then
+		rm -r "$1" >/dev/null 2>&1 || end "dir"
+	fi
+}
+
+
+#
+#Začátek skriptu
+#
+
+trap "rm -r $ardifftmp; exit 1;" SIGINT SIGTERM SIGHUP SIGQUIT
+
+#zpracovani argumentu prikazove radky
+while getopts ':o:lcpr' opt;
+do
+	case "$opt" in
+	o)
+		opto=true
+		arname="$OPTARG"
+		
+		if [ "$arname" = "" ]
+		then end "param"
+		fi
+		
+		;;
+	l)
+		optl=true
+		;;
+	c)
+		optc=true
+		;;
+	p)
+		optp=true
+		;;
+	r)
+		optr=true
+		;;
+	?)
+		end "param"
+	esac
+done
+
+shift $((OPTIND-1))
+
+#kontrola argumentu prikazove radky
+if `$optr`;
+then
+	if ! `$optp`;
+	then end "param"
+	fi
+fi
+
+if `$opto`;
+then
+	if `$optl`;
+	then end "param"
+	fi
+fi
+
+if `$optp`;
+then
+	if `$optl`;
+	then end "param"
+	elif `$optc`;
+	then end "param"
+	elif ! `$opto`;
+	then end "param"
+	fi
+fi
+
+if `$optc`;
+then
+	if ! `$opto`;
+	then end "param"
+	fi
+fi
+
+#navrat do puvodniho adresare
+cd "$calldir" >/dev/null 2>&1 || end "dir"
+
+#kontrola jestli existuji soubory na prikazove radce
+if [[ ( ! -f "$1" ) || ( ! -f "$2" ) ]];
+then end "file"
+fi
+
+if [ "$3" != "" ];
+then end "param"
+fi
+
+#vytvoreni adresaru na dekompresi 
+mkdir "$ar1" >/dev/null 2>&1 || end "dir"
+mkdir "$ar2" >/dev/null 2>&1 || end "dir"
+
+#dekomprese archivu
+decompress "$1" "$ar1"
+decompress "$2" "$ar2"
+
+#spusteni cinnosti podle argumentu prikazove radky
+if `$optc`;
+then
+	inspect "$ar1" "$ar2" "$ar3"
+	compress "$ar3" "$arname"
+elif `$optl`;
+then
+	inspect "$ar1" "$ar2" "$ar3"
+elif `$optp`;
+then
+	dirpatch "$ar1" "$ar2"
+	compress "$ar1" "$arname"
+else
+	end "param"
+fi
+
+#navrat do puvodniho adresare
+cd "$calldir" >/dev/null 2>&1 || end "dir"
+
+#ukonceni skriptu
+end "OK"
+

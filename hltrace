@@ -1,0 +1,91 @@
+#!/bin/ksh
+
+#
+# Soubor:  hltrace
+# Datum:   2011/03/11
+# Autor:   Ondrej Slampa
+# Kontakt: xslamp01@stud.fit.vutbr.cz
+# Projekt: Skript hltrace, projekt c. 1 pro predmet IOS
+# Popis:   Skript zvyraznuje klicové prvky stopy (angl. trace) zaznamenane
+#          pomoci nastroje strace. Skript pracuje jako textovy filtr. Vstupem
+#          skriptu je stopa z programu strace, výytupem je obsah HTML stranky
+#          obsahujici stopu se zvyraznenou syntaxi.
+#
+
+#
+# Definice promennych
+#
+
+#text, ktery se prida na zacatek
+head='<html>
+<style>
+.pid { color:darkred; }
+.ts { color:navy; }
+.number { color:red; }
+.const { color:green; }
+.string { color:blue; }
+.hlcall { text-decoration:none; font-weight:bold; color:black; }
+.call { text-decoration:none; color:olive; }
+
+</style>
+<body><pre>'
+
+#text, ktery se prida na konec
+tail="</pre></body></html>"
+
+#
+# Zacatek skriptu
+#
+
+#zpracovani argumentu prikazove radky
+while getopts ':s:h' opt;
+do
+	case "$opt" in
+	s)
+		callname=$OPTARG
+		
+		if [ $callname = "" ];
+		then
+			echo "Spatne parametry na prikazove radce." >&2
+			exit 1
+		fi
+	;;
+	h)
+		echo 'hltrace zvyrazni syntax stopy od strace.
+Pouziti: hltrace [volby] <stopa.strace >stopa.html
+Volby:
+  -s SYSCALL  Specialne zvyrazni volani SYSCALL.'
+		exit 0
+	;;
+	?)
+		echo "Spatne parametry na prikazove radce." >&2
+		exit 1
+	esac
+done
+
+#tisk textu, ktery se prida na zacatek
+echo $head
+
+#uprava textu pomoci editoru sed
+#1.radek: nahrada '&', '<', '>' a doplneni ',' na konec radku (pro jeho lepsi detekci)
+#2.radek: oznaceni retezcu
+#3.radek: oznaceni PID
+#4.radek: oznaceni casovych udaju
+#5.radek: oznaceni konstant
+#6.radek: oznaceni systemovych volani
+#7.radek: oznaceni cisel v hexadecimalnim tvaru
+#8.radek: oznaceni cisel
+#9.radek: oznaceni uzivatelem definovaneho systemoveho volani
+sed -r -e 's/\&/&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/$/,/g' \
+-e 's/"[^"]*"/<span class="string">&<\/span>/g' \
+-e 's/^[[:digit:]][[:digit:]]*/<span class="pid">&<\/span>/' \
+-e 's/[[:digit:]]\.[[:digit:]][[:digit:]]*/<span class="ts">&<\/span>/' \
+-e 's/[[:upper:]][[:upper:]_[:digit:]]*[^[:lower:],.()|\&]/<span class="const">&<\/span>/g' \
+-e 's/([[:lower:]][[:lower:][:digit:]_]*)\(/<a href="http:\/\/www.kernel.org\/doc\/man-pages\/online\/pages\/man2\/\1.2.html" class="call">\1<\/a>\(/g' \
+-e 's/([ (])(-?0[xX][[:xdigit:]][[:xdigit:]]*)([),])/\1<span class="number">\2<\/span>\3/g' \
+-e 's/([ (])(-?[[:digit:]][[:digit:]]*)([),])/\1<span class="number">\2<\/span>\3/g' \
+-e "s/class=\"call\">$callname<\/a>/class=\"hlcall\">$callname<\/a>/" -e 's/,$//g'
+
+#tisk textu, ktery se prida na konec
+echo $tail
+
